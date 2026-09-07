@@ -1,10 +1,30 @@
 # Project context for Claude
 
 This repo documents getting Linux running well on a **Samsung Chromebook 3
-(XE500C13)** — Intel Celeron N3060 (Braswell), coreboot + depthcharge
-firmware. As of repo creation, **the device hasn't arrived yet** — this repo
-starts as prep notes/plan, to be filled in with the real diagnostic saga
-once hardware is in hand.
+(XE500C13)** — Intel Celeron N3060 (Braswell), MrChromebox Full ROM
+(UEFI/edk2) firmware. The first unit has already arrived, been fully
+diagnosed, and retired — `memtest86+` found severe soldered-RAM failure
+(3000 then 8314 errors, freezing before either pass completed), which
+retroactively makes most of the other bugs chased along the way (a
+touchpad hard-lock, an `i915` GPU driver crash, kernel heap corruption)
+suspect as RAM-corruption symptoms rather than confirmed independent
+bugs. See `README.md`'s full saga for the diagnostic chain — it's real
+and worth keeping even though the root cause turned out to be hardware.
+
+**A second unit is inbound.** Once it has SSH access, the priorities are:
+1. Harden the default credentials immediately (see
+   `scripts/harden-default-credentials.sh`) — skipped on unit 1 before the
+   RAM finding took priority.
+2. Run `memtest86+` (see `scripts/install-memtest86-grub-entry.sh`) early
+   — before chasing any driver-level theory for a crash/freeze symptom,
+   not after. That ordering cost significant time on unit 1.
+3. Re-verify whether the touchpad freeze and `i915` page-flip crash
+   (README sections 4-5) are real, independent bugs on confirmed-good RAM,
+   or don't reproduce at all once RAM isn't a confound.
+4. Append a new dated section to `README.md` for unit 2 rather than
+   editing/removing unit 1's writeup — the diagnostic reasoning there
+   (and the "ruled out in order" discipline) is still valuable even though
+   the underlying hardware died.
 
 ## Sibling repo — read before assuming anything transfers
 
