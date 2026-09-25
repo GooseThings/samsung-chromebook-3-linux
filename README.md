@@ -275,6 +275,182 @@ Still outstanding, to redo on the next (hopefully healthy) unit:
   corruption symptoms all along — only possible to know on confirmed-good
   memory.
 
+## Unit 2 (2026-09-25)
+
+A second CELES unit arrived and, unlike unit 1, made it through the full
+plan cleanly: firmware flash, Debian install, and a clean `memtest86+`
+pass, with neither of unit 1's headline bugs (the touchpad hard-lock, the
+`i915` page-flip crash) reproducing so far. Documented as its own section
+per this repo's `CLAUDE.md`, rather than editing unit 1's writeup above.
+
+### 1. Enabling SSH from ChromeOS dev mode hit a real rootfs-verification wall
+
+`passwd root` (part of getting `dev_features_ssh`-based SSH access working)
+failed with **"Authentication token lock busy"**. This wasn't a stale lock
+file — it was ChromeOS's rootfs verification still being active, making
+`/etc` genuinely read-only, so `passwd` couldn't create its lock file at
+all. Fixed with:
+
+```sh
+sudo /usr/share/vboot/bin/make_dev_ssd.sh --remove_rootfs_verification
+sudo reboot
+# after reboot:
+mount -o remount,rw /
+passwd root
+/usr/libexec/debugd/helpers/dev_features_ssh
+```
+
+`openssh-server` was already running as an upstart job after that — ChromeOS
+uses `initctl`/upstart, not systemd or SysV `service`, so `initctl list |
+grep ssh` is the right way to check job status here, not `service sshd
+status`.
+
+### 2. Same board, confirmed the same way as unit 1
+
+HWID `CELES D25-D6G-T6B-I6U`, board name `celes` — same identification
+approach as unit 1's section 1 (`crossystem hwid`, `dmesg | grep
+"Hardware name"` once Linux was up).
+
+### 3. Disabling write-protect required real disassembly
+
+`crossystem wpsw_cur` read `1` (closed) out of the box — a Full ROM flash
+needs it `0`. Unlike the software-side rootfs issue above, this is a
+physical hardware switch: a screw on the motherboard, not a jumper or
+firmware setting. Procedure (battery physically disconnected first — a
+guide's author specifically warned that powering off the OS is *not* the
+same as removing power from internal cables):
+
+1. Remove the back panel.
+2. Remove the screws holding the motherboard down; disconnect the two
+   ribbon cables blocking it from flipping (one via a rotating plastic
+   locking tab, one via a metal handle along the connector's edge).
+3. Flip the motherboard over.
+4. Find **the only screw on the backside with an arrow printed pointing at
+   it** (with a small metal washer under it) — that's the write-protect
+   screw. Remove it.
+5. Reassemble.
+
+Confirmed via `crossystem wpsw_cur` (`1` → `0`) and `flashrom -p host
+--wp-status` (`write protect is disabled`) after reassembly and reboot.
+
+Sources: [maxwyb.github.io teardown w/ photos](https://maxwyb.github.io/linux/2016/11/05/chromebook-write-protection.html),
+[chrultrabook forum thread](https://forum.chrultrabook.com/t/samsung-chromebook-3-celes-write-protect-screw-access/2694).
+
+### 4. MrChromebox Full ROM flash — succeeded on the first attempt
+
+Ran `firmware-util.sh` → "Install/Update UEFI (Full ROM) Firmware". Two
+things worth doing differently from just running the script interactively
+at the keyboard, given this was driven over SSH:
+
+- **Backed up the stock firmware off-device first**, independent of the
+  script's own backup option (which requires a FAT32 USB stick to be
+  physically connected and interactively selected — extra friction when
+  there isn't one to hand):
+  ```sh
+  flashrom -p host -r /tmp/stock-firmware-backup.bin
+  ```
+  then `scp`'d it off the device before flashing, so a known-good stock
+  image survives even if the flash bricks the device or the disk gets
+  wiped.
+- **Ran the flash detached from the SSH session** (`setsid bash -c
+  '... < answers.txt > flash.log 2>&1 &'`) so an ~90-second SPI flash
+  write wouldn't be at risk of dying from a dropped SSH connection —
+  the flash write itself doesn't depend on the network, but the parent
+  shell process does, and losing it mid-write would be exactly the kind
+  of interruption that bricks a device.
+
+Result: `Full ROM firmware successfully installed/updated`, no retry
+needed. Confirmed post-reboot via `dmesg | grep DMI`:
+`GOOGLE Celes/Celes, BIOS MrChromebox-2606.1 07/14/2026` — matches unit 1's
+firmware string exactly.
+
+### 5. Debian netinst install — no Calamares detour needed this time
+
+Went straight to the **netinst** installer per unit 1's own recommendation
+(section 2), skipping the live-Cinnamon/Calamares path entirely. Installed
+cleanly with no retries. At the GRUB-install step, this run actually
+registered a proper NVRAM boot entry (`efibootmgr` showed `Boot0004*
+debian`, active as `BootCurrent`) without needing the "force EFI removable
+media path" fallback unit 1's writeup warned about — so that NVRAM
+flakiness isn't universal on this firmware, just something to watch for,
+not something to assume will happen.
+
+### 6. Two sudo/SSH gotchas specific to Debian's installer defaults
+
+- Debian's installer only auto-adds the primary user to the `sudo` group
+  if the **root password field is left blank** during install. Since a
+  root password was set (alongside the normal user account), the user
+  account had no sudo access after first boot — `usermod -aG sudo
+  <user>` (run as root) fixes it.
+- Debian's `sshd` ships with `PermitRootLogin prohibit-password` by
+  default — root password login works fine at the **local console**
+  (`su -`) but is correctly rejected over SSH even with the right
+  password. This is expected hardening, not a bug: the fix is to get a
+  sudo-capable non-root user working over SSH (previous bullet), not to
+  loosen `sshd_config`.
+
+### 7. `memtest86+` run early this time — clean pass
+
+Per unit 1's explicit lesson (README section 8, `CLAUDE.md` priority #2),
+ran `scripts/install-memtest86-grub-entry.sh` and booted straight into
+`memtest86+` **before** installing the desktop environment or re-testing
+any driver-level symptoms. Result: **0 errors on a full pass** — a clean
+contrast to unit 1's 3000-then-8314-error result that froze before
+completing even one pass. This unit's RAM looks genuinely healthy.
+
+### 8. Cinnamon — already installed via netinst's own software selection
+
+Unlike unit 1 (installed via live-Cinnamon media), this unit went through
+netinst's tasksel software-selection screen, and `task-cinnamon-desktop`
+ended up installed directly from there (`lightdm` + `slick-greeter`,
+`graphical.target` as default) — no separate `apt install` step was
+actually needed by the time it was checked.
+
+### 9. Touchpad hard-lock and `i915` crash (unit 1 sections 4-5) — did not reproduce
+
+With RAM now confirmed healthy, both of unit 1's headline symptoms were
+re-tested directly: progressive touchpad interaction (tap → drag → ~30-60s
+of normal use) and GPU load (video playback, window dragging/resizing).
+**Neither reproduced.**
+
+One unrelated glitch did occur once: `cinnamon-screensaver` locked the
+screen and then failed to unlock, dropping back to the LightDM greeter
+instead. `journalctl -p err` showed the actual cause:
+
+```
+cinnamon-screensaver-pam-helper[...]: pam_unix(cinnamon-screensaver:auth): conversation failed
+cinnamon-screensaver-pam-helper[...]: pam_unix(cinnamon-screensaver:auth): auth could not identify password for [user]
+```
+
+`cat /proc/sys/kernel/tainted` read `0` and there was no oops anywhere in
+`dmesg` — this was **not** a kernel/driver crash (contrast with section
+5's `TAINT_DIE`-tainted, oops-logged `i915` crash). Logging in again at the
+greeter worked immediately. Reads as a one-off Cinnamon/PAM timing glitch,
+unrelated to this repo's hardware-specific bugs.
+
+**Given this**: clean RAM plus no reproduction of either bug under
+deliberate testing is evidence (not proof — this was one test session, not
+extended stress-testing) that sections 4-5 on unit 1 were more likely
+RAM-corruption symptoms than universal firmware/driver bugs on this board.
+The two community bug reports linked in section 4 still stand on their own
+merits for other affected units, though.
+
+### Unit 2 status
+
+Healthy so far: firmware flashed, Debian 13 + Cinnamon running, RAM
+confirmed clean, neither of unit 1's headline bugs reproduced under direct
+testing. Credentials were set to real values directly during the Debian
+install (not a vendor-set default), so `scripts/harden-default-credentials.sh`
+doesn't apply the way it did for the sibling repo's pre-built-image
+install method — there's no default credential here to harden.
+
+Still worth watching with extended real-world use rather than considered
+fully closed:
+- The touchpad and `i915` crash paths were only exercised under short,
+  deliberate testing, not extended daily use.
+- Whether the NVRAM boot-entry flakiness from unit 1's section 2 recurs
+  under different conditions (e.g. after firmware updates, NVRAM clears).
+
 ## Diagnostics cheat sheet
 
 Useful commands if you're debugging similar territory:
