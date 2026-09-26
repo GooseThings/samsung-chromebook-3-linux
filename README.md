@@ -523,6 +523,14 @@ that reliably triggered it before. **No crash, no flicker.** (FBC was
 already off by default on this platform — Cherryview doesn't support it —
 so PSR was the only power-saving display feature left to suspect.)
 
+**Update, a later session**: this fix only ever covered the one trigger
+it was tested against. The same visible symptom came back under
+completely different triggers (see section 15) and survived every
+further mitigation tried, including ones that should have been more
+fundamental than PSR. Leaving this section's own account intact since the
+PSR fix was real and reproducible for what it covered — just don't read
+"no crash, no flicker" as the end of the story.
+
 ### 12. Top-row action keys send no scancode at all — a firmware/EC gap, not a Linux remap issue
 
 Tried applying the sibling repo's function-row-remap technique
@@ -575,30 +583,173 @@ further. Workarounds: browser back/forward via `Alt+Left`/`Alt+Right`,
 brightness/volume via Cinnamon's own OSD/system tray, or a USB keyboard
 (bypasses the AT/PS2 EC path entirely) if the built-in keys are needed.
 
+### 13. Ham radio and general software installed
+
+Straightforward installs, noted here mainly for the gotchas:
+
+- **[MSHV](https://github.com/LZ2HV/MSHV)** (weak-signal digital mode
+  decoder) — no prebuilt Linux binary exists upstream (Windows-only
+  releases); it does have genuine native Linux support via Qt5/qmake,
+  though. Built from source: `qtbase5-dev`, `qt5-qmake`, `libasound2-dev`,
+  `libfftw3-dev`, `libpulse-dev`, `libqt5websockets5-dev`,
+  `libqt5serialport5-dev`, then `qmake MSHV_x86_64.pro && make` — compiles
+  clean on Debian 13's packages with no source changes needed. Slow on
+  this CPU (~10 minutes for ~150 files) but works.
+- **[Pat](https://getpat.io/)** (Winlink client) — installed the upstream
+  GitHub release `.deb` (v1.0.0) over Debian's own older packaged version
+  (0.16.0); `apt install ./pat_*.deb` upgrades it in place cleanly.
+- **flrig** (rig control) — directly in Debian's repos, plain
+  `apt install flrig`.
+- **Discord**, **GridTracker 2** — official `.deb` packages from each
+  vendor's own site, both installed clean.
+- **HAMRS** (portable-ops logging) — Linux build is AppImage-only (no
+  `.deb`, unlike GridTracker). Failed on first launch with `dlopen():
+  error loading libfuse.so.2` — Debian 13 doesn't install FUSE2 by
+  default anymore (only `fuse3`). Fixed with `apt install libfuse2t64`
+  (the time_t-transition-renamed compat package); AppImage FUSE-mounts
+  and runs normally after that.
+
+### 14. Pat's web config UI wouldn't save — browser-side, never conclusively root-caused
+
+Set a callsign in Pat's web UI (`localhost:8080`); it silently didn't
+persist, and the mailbox stayed locked behind the "missing mycall" guard.
+Isolated methodically:
+
+- Restarted Pat with its output captured to a log file instead of an
+  interactive terminal, to actually see what happened server-side on a
+  save attempt — no request of any kind logged.
+- Tested the backend directly: `curl -X PUT http://localhost:8080/api/config
+  -d '{"mycall":"TEST1"}'` — saved instantly, confirmed via
+  `~/.config/pat/config.json`. **The backend works fine.** The browser's
+  save action either wasn't firing the request at all, or something
+  client-side (Brave's Shields, a JS error) was swallowing it.
+- **Gotcha discovered doing this**: `/api/config`'s `PUT` is a full
+  replace, not a merge. A follow-up curl call sending only `{"mycall":""}`
+  to "reset" the test value wiped every other field in the config
+  (`ax25.engine`, `http_addr`, `service_codes`, etc. all went blank/zero),
+  and returned `500 invalid AX.25 engine ''` — after already writing the
+  broken file to disk. The real web frontend avoids this by always
+  submitting the entire loaded config object back, not a partial one;
+  don't shortcut-test this API with partial JSON bodies. Recovered by
+  deleting `config.json` entirely and letting Pat regenerate its own
+  clean defaults on next start, rather than hand-reconstructing it.
+- Never identified the actual browser-side cause. The user reported it
+  "just worked" on a later attempt, callsign saved successfully and
+  confirmed via the same `config.json` inspection. Filed here as an
+  unresolved, self-resolved glitch rather than a confirmed fix.
+
+### 15. The `i915` display bug is back, worse than thought — five more mitigations, all failed
+
+Section 11's PSR fix turned out to only cover the one trigger it was
+tested against (Firefox + video). The same visible symptom (flicker,
+black screen, garbage lines, no cursor) came back repeatedly under
+completely different triggers — Discord loading and being clicked
+around in, and a plain logout to the LightDM greeter — with `i915.enable_psr=0`
+still confirmed active the entire time. Every further mitigation tried
+also failed, each ruled out with direct evidence rather than assumption:
+
+- **Discord's own GPU use** — launched with `--disable-gpu
+  --disable-accelerated-video-decode --disable-accelerated-video-encode
+  --disable-features=VaapiVideoDecoder,VaapiVideoEncoder`. Confirmed via
+  `fuser -v /dev/dri/*` that Discord held **zero** GPU file descriptors at
+  all (no `card0`, no `renderD128`) — genuinely fully off the GPU. Bug
+  recurred anyway.
+- **Xorg's own rendering backend** — `/etc/X11/xorg.conf.d/` snippet
+  forcing `Option "AccelMethod" "none"`. Confirmed via `Xorg.0.log`:
+  `glamor disabled`, `ShadowFB: enabled YES` — genuine software-only X
+  server rendering. Bug recurred anyway. (Reverted afterward — real
+  performance cost, zero benefit.)
+- **Display C-states** — `i915.enable_dc=0` (disables the display
+  engine's DMC-managed power states, a different mechanism than PSR).
+  Confirmed active via `/proc/cmdline`. Bug recurred anyway.
+- **Xorg's scheduling priority** — `chrt -r -p 10 <Xorg pid>`, live on the
+  running process, on the theory that a display-commit deadline miss
+  under CPU/memory contention was the mechanism (see below). Confirmed
+  via `chrt -p` before/after. Bug recurred anyway, caught live by a
+  `Monitor`-based `dmesg -w` watch running during the reproduction
+  attempt.
+- **Out-of-memory exhaustion** — checked `dmesg`/`journalctl -b 0` for any
+  `Out of memory: Killed process` or page-allocation-failure line across
+  the whole boot. **None.** This isn't the system running out of memory
+  capacity and OOM-killing things.
+
+What actually correlated, every time checked: low free memory (as little
+as 120MB free of 3.8GB, swap actively in use) at the moment of each
+recurrence, and two new, more specific error signatures beyond section
+11's plain FIFO underrun:
+
+```
+i915 0000:00:02.0: [drm] *ERROR* Atomic update failure on pipe A (start=42033 end=42034) time 5 us, min 763, max 767, scanline start 750, end 768
+i915 0000:00:02.0: [drm] *ERROR* Unexpected PHY_STATUS 0x80000000, expected 0x800001f8 (PHY_CONTROL=0x050007fd)
+```
+
+The first is an explicit real-time deadline miss on the display commit —
+consistent with (though not proven caused by) heavy simultaneous memory
+pressure from running Discord and a many-tabbed Firefox session together
+on a 3.8GB machine, exactly the condition present at the time. The second
+is a different kind of error entirely: a hardware-level status-register
+mismatch on the display's DPIO PHY (the physical layer driving the eDP
+signal lanes), a genuinely lower-level symptom than anything else logged
+tonight, and not something any rendering, compositor, or scheduling
+change could plausibly reach.
+
+**Where this stands**: unresolved. There's no alternative driver to try —
+`i915` is the only graphics driver Cherryview has ever had on Linux, open
+or closed. VLV/CHV's display PHYs are a documented peculiar area of this
+driver (sideband-controlled, not plain MMIO, with specific clock-sequencing
+requirements), and the exact function behind that PHY_STATUS check
+(`vlv_wait_port_ready()`) was still being refactored upstream as recently
+as February 2025 — a newer kernel than Debian's stock 6.12.107 is a real,
+untried option, at the cost of losing a clean apt-managed kernel. The
+extended, multi-pass `memtest86+` run (beyond section 7's single quick
+clean pass) is also still outstanding, and worth doing given the
+memory-pressure correlation above, even without direct hardware-error
+evidence (no MCE, no EDAC report, no OOM-kill) found tonight.
+
+Two smaller, unrelated findings from the same log review, worth a
+one-line note each: `soundmodem.service` fails to start
+("Configuration not found") — a leftover dependency of the `pat`/
+`ax25-tools` install, unconfigured and unused so far, harmless but worth
+cleaning up eventually; and the `cinnamon-screensaver` PAM glitch from
+section 9 recurred a second time tonight, still one-off and still not
+further investigated.
+
 ### Unit 2 status
 
-Running well: firmware flashed, Debian 13 + Cinnamon running, RAM
-confirmed clean, power tuning applied and verified across a reboot. The
-touchpad hard-lock (unit 1 section 4) hasn't reproduced. The `i915` bug
-did reproduce, but as a non-fatal PSR-related display corruption rather
-than section 5's fatal crash, and it's fixed (`i915.enable_psr=0`). The
-top-row action keys don't work and are a documented firmware/EC
-limitation (section 12), not something Linux-side can fix. Credentials
-were set to real values directly during the Debian install (not a
-vendor-set default), so `scripts/harden-default-credentials.sh` doesn't
-apply the way it did for the sibling repo's pre-built-image install
-method — there's no default credential here to harden.
+Mostly running well, but with one real open problem. Firmware flashed,
+Debian 13 + Cinnamon running, RAM's single quick pass came back clean,
+power tuning applied and verified across a reboot, ham radio and general
+software installed. The touchpad hard-lock (unit 1 section 4) hasn't
+reproduced. The top-row action keys don't work and are a documented
+firmware/EC limitation (section 12), not something Linux-side can fix.
+Credentials were set to real values directly during the Debian install
+(not a vendor-set default), so `scripts/harden-default-credentials.sh`
+doesn't apply the way it did for the sibling repo's pre-built-image
+install method — there's no default credential here to harden.
+
+**The open problem**: the `i915` display-corruption bug (section 11, then
+section 15) is not actually fixed. PSR-disable genuinely fixed its own
+trigger, but the same symptom keeps coming back under other triggers and
+has now survived five distinct mitigations across every layer of the
+stack — app GPU use, Xorg's own rendering backend, two different kernel
+display power features, and Xorg's own scheduling priority. Current
+best guess is a genuine PHY-level fragility in this Cherryview board's
+display driver, possibly correlated with memory pressure, not fixable
+with a config flag. Untried next steps: a newer kernel than Debian's
+stock 6.12.107 (this exact PHY-readiness code saw upstream changes as
+recently as February 2025), and a longer multi-pass `memtest86+` run
+(only a single quick clean pass has been done so far, and every
+recurrence tonight coincided with low free memory).
 
 Still worth watching with extended real-world use rather than considered
 fully closed:
 - The touchpad hard-lock path was only exercised under short, deliberate
-  testing, not extended daily use — unlike the `i915` bug, it hasn't shown
-  up yet, but that's not the same as ruling it out.
-- Whether disabling PSR has any downside (typically slightly higher power
-  draw when idling on a static screen) worth watching given this board's
-  already-constrained battery life goals.
+  testing, not extended daily use — it hasn't shown up yet, but that's
+  not the same as ruling it out.
 - Whether the NVRAM boot-entry flakiness from unit 1's section 2 recurs
   under different conditions (e.g. after firmware updates, NVRAM clears).
+- `soundmodem.service` fails to start (section 15) — unconfigured
+  leftover from the `pat` install, harmless but unresolved.
 
 ## Diagnostics cheat sheet
 
