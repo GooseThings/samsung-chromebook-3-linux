@@ -864,7 +864,7 @@ shadowing `/etc/xdg/autostart/org.gnome.Software.desktop` with a
 ~1115MB to ~1279MB immediately. The app itself still launches normally
 from the menu when wanted; it just no longer sits resident all session.
 
-### 18. A completely separate bug masquerading as the `i915` crash: a broken PAM `account` stack crash-looping the screensaver
+### 18. A completely separate bug masquerading as the `i915` crash: a screensaver crash-loop, first blamed on a broken PAM `account` stack (mechanism corrected — see the retest at the end of this section)
 
 After section 16's GPU-frequency-pin experiment, "the screen goes black
 and comes back" kept being reported — but this time with a distinct
@@ -946,6 +946,53 @@ device, worth revisiting (with real debugging tools, not SSH guesswork)
 before this device is ever used somewhere an unattended unlocked screen
 would matter.
 
+**Correction (2026-09-26, retested after a reboot with the right
+instrumentation this time).** The conclusion above — "PAM's `account`
+phase was failing on every cycle, crashing the screensaver" — turned out
+to be **wrong on the mechanism**. Three probes, in order:
+
+1. **Isolated the account phase.** No `pamtester`/`strace`/`gdb` on this
+   box, so a ~60-line C harness (forward-declaring the few libpam symbols,
+   linked against the runtime `libpam.so.0` since there's no
+   `libpam0g-dev`) called *only* `pam_acct_mgmt` for the
+   `cinnamon-screensaver` service as `levi` — no auth, no state change.
+   Result: it reproduced the exact journal line
+   `pam_unix(cinnamon-screensaver:account): setuid failed: Operation not permitted`
+   **and returned `rc=0 (Success)` anyway.** pam_unix logs the setuid
+   failure (it can't read `/etc/shadow` for password-aging as the
+   unprivileged screensaver user), then falls back to success. So that
+   scary line is **benign noise, not a failure** — and it was *introduced*
+   by this section's own `@include common-account` edit; the distro
+   default (`cinnamon-screensaver.bak`) omits the account stack entirely
+   and also succeeds, silently. (`lightdm` survives the same full stack
+   only because its greeter runs as **root** — euid 0 reads shadow
+   directly, no setuid needed. A user-privileged screensaver never can,
+   which is why the distro ships it without the account include.)
+2. **Captured the traceback that got lost twice before** — launched an
+   instrumented instance (`PYTHONUNBUFFERED=1`, `--debug`, stdout+stderr
+   to a file; the D-Bus name was free so no conflict), locked it, and did
+   a real password unlock. This time the buffer couldn't eat anything.
+   Result: a **completely clean** lock → unlock cycle —
+   `pam_authenticate ==> 0`, `pam_acct_mgmt ==> 0`, `pam_setcred ==> 0`,
+   `CS_PAM_AUTH_SUCCESS`, then an orderly `CsScreen dispose/finalize`. No
+   `sys.excepthook`, no traceback. And the `setuid failed` line *still*
+   appeared in the journal during this successful unlock — final proof
+   it's cosmetic.
+3. **Therefore the crash-loop does not reproduce post-reboot.** The unlock
+   path this section blamed works end-to-end. The original every-30-90s
+   crash was almost certainly **transient/environmental** — it was seen
+   during the same section 15-16 `i915`/OOM night, and memory pressure is
+   the prime suspect (exactly the "two unrelated bugs look identical"
+   trap this repo keeps warning about), not a deterministic PAM defect.
+
+**What was actually changed:** reverted `/etc/pam.d/cinnamon-screensaver`
+to the distro default (dropped the `@include common-account` line this
+section had added), which removes the misleading `setuid failed` log line
+on every unlock without changing unlock behavior (`pam_acct_mgmt` still
+returns success — now via an empty account stack instead of a logged-and-
+ignored pam_unix failure). Auto-lock is **left disabled by preference**,
+not because of an unfixed crash — the crash could not be reproduced.
+
 ### Unit 2 status
 
 Mostly running well, but with one real open problem. Firmware flashed,
@@ -990,15 +1037,18 @@ Keeping them straight matters:**
    hardware resource ceiling, not something to chase a fix for — the
    mitigation is not running that much simultaneously, which section 17's
    performance-tuning work also points at directly.
-3. **A broken PAM `account` stack crash-looping the Cinnamon screensaver**
-   (section 18) — repeatedly misread mid-session as the `i915` bug
-   recurring, since both present as "screen goes black, sometimes to a
-   lock prompt." Root cause not conclusively identified (needs a real
-   debugger, not more SSH guesswork), mitigated by disabling the
-   screensaver/auto-lock entirely. **This means there is currently no
-   automatic screen lock on this machine at all** — a real trade-off, not
-   a clean fix, worth revisiting before this device is used anywhere an
-   unattended unlocked screen would matter.
+3. **A Cinnamon screensaver crash-loop** (section 18) — repeatedly misread
+   mid-session as the `i915` bug recurring, since both present as "screen
+   goes black, sometimes to a lock prompt." First blamed on a failing PAM
+   `account` phase, but a later reboot-and-retest (see section 18's
+   correction) **disproved that mechanism**: the `pam_unix(...:account):
+   setuid failed` line is benign — `pam_acct_mgmt` returns success anyway
+   — and a full instrumented lock/unlock cycle now runs cleanly with no
+   crash. The crash-loop was most likely transient/environmental (memory
+   pressure during the section 15-16 night), not a PAM defect. Left in a
+   deliberate state: the PAM file was reverted to the distro default (to
+   drop the misleading log line), and **auto-lock is disabled by
+   preference** — a personal-device choice, no longer a crash workaround.
 
 Still worth watching with extended real-world use rather than considered
 fully closed:
@@ -1008,8 +1058,12 @@ fully closed:
 - Whether the RPS frequency pin genuinely fixed the `i915` bug or just
   got lucky over one evening — needs much longer soak testing, now that
   the two confounding bugs above are understood and out of the way.
-- The screensaver PAM crash-loop's actual root cause, and whether
-  automatic locking should be re-enabled once it's properly fixed.
+- The screensaver crash-loop (section 18) is not considered fully closed:
+  it could not be reproduced after a reboot, but it was never traced to a
+  deterministic cause either. If it ever returns, the instrumented-capture
+  method from section 18's correction (unbuffered `--debug` instance +
+  real unlock) will catch the actual Python traceback. Auto-lock stays off
+  by preference regardless.
 - Whether the NVRAM boot-entry flakiness from unit 1's section 2 recurs
   under different conditions (e.g. after firmware updates, NVRAM clears).
 - `soundmodem.service` fails to start (section 15) — unconfigured
