@@ -537,7 +537,7 @@ fundamental than PSR. Leaving this section's own account intact since the
 PSR fix was real and reproducible for what it covered — just don't read
 "no crash, no flicker" as the end of the story.
 
-### 12. Top-row action keys send no scancode at all — a firmware/EC gap, not a Linux remap issue
+### 12. Top-row action keys send no scancode at all — a firmware/EC gap (later closed by a firmware update; see the correction at the end of this section)
 
 Tried applying the sibling repo's function-row-remap technique
 (the sibling repo's `scripts/fix-function-row-keys.sh` — not in this
@@ -589,6 +589,31 @@ scope for now. Documented as a known limitation rather than pursued
 further. Workarounds: browser back/forward via `Alt+Left`/`Alt+Right`,
 brightness/volume via Cinnamon's own OSD/system tray, or a USB keyboard
 (bypasses the AT/PS2 EC path entirely) if the built-in keys are needed.
+
+**Correction (2026-09-26).** This limitation is **gone** — the top-row
+keys now emit scancodes, and the machine is presently on firmware
+**MrChromebox-2606.1 (dated 07/14/2026)**, newer than what section 12 was
+written against. Captured live with `xev` on the running X11 session
+(no root, no device access needed): every top-row key produces a clean,
+ordinary **F1 through F10** (X keycodes 67-76, keysyms `F1`-`F10`), the
+same as the AT keyboard's other keys — so a newer MrChromebox firmware
+evidently added the Braswell/`celes` EC keyboard support this section
+found missing. The "no scancode reaches the OS at all" finding was
+accurate when written; it just describes an older firmware.
+
+That means the keys are now fully remappable at the OS level, and none of
+the coreboot-rebuild speculation above is necessary. **Left as-is by
+preference** — kept as plain F1-F10 function keys rather than remapped to
+the printed Chromebook actions. If the printed functions are ever wanted,
+the standard approach applies cleanly now: a udev hwdb override matching
+`evdev:atkbd:dmi:*svnGOOGLE:pnCeles:*` mapping the AT scancodes to
+`KEY_BACK`/`KEY_FORWARD`/`KEY_REFRESH`/`KEY_BRIGHTNESSDOWN`/`KEY_BRIGHTNESSUP`/
+`KEY_MUTE`/`KEY_VOLUMEDOWN`/`KEY_VOLUMEUP` (which X then renders as the
+matching `XF86*` keysyms — `intel_backlight` is present, so the brightness
+keys would work), plus two Cinnamon keyboard shortcuts for the
+fullscreen/overview window keys. This is the sibling repo's section-9
+technique, which `CLAUDE.md` correctly predicted would transfer in method
+once the scancodes actually existed — they now do. Not applied.
 
 ### 13. Ham radio and general software installed
 
@@ -999,8 +1024,10 @@ Mostly running well, but with one real open problem. Firmware flashed,
 Debian 13 + Cinnamon running, RAM's single quick pass came back clean,
 power tuning applied and verified across a reboot, ham radio and general
 software installed. The touchpad hard-lock (unit 1 section 4) hasn't
-reproduced. The top-row action keys don't work and are a documented
-firmware/EC limitation (section 12), not something Linux-side can fix.
+reproduced. The top-row keys now emit ordinary F1-F10 (a newer firmware
+closed the EC gap section 12 originally hit — see that section's
+correction); they're kept as function keys by preference, remappable to
+the printed Chromebook actions if ever wanted.
 Credentials were set to real values directly during the Debian install
 (not a vendor-set default), so `scripts/harden-default-credentials.sh`
 doesn't apply the way it did for the sibling repo's pre-built-image
