@@ -714,6 +714,115 @@ cleaning up eventually; and the `cinnamon-screensaver` PAM glitch from
 section 9 recurred a second time tonight, still one-off and still not
 further investigated.
 
+### 16. A GPU-frequency-scaling angle from the sibling repo — inconclusive — and a full system hang that turned out to be real memory exhaustion, not the display bug
+
+The sibling Chromebook 2 repo has an almost exact parallel to this whole
+saga (its own section 6): intermittent panel flicker/blink-to-black,
+initially blamed on CPU/GPU load, actually caused by the Mali GPU's
+`devfreq` **frequency-scaling transitions themselves** (not the frequency
+level — both a fixed-low and fixed-high pin worked equally well) glitching
+a voltage rail shared with the panel. `i915` has an analogous mechanism
+(RPS — automatic render-engine frequency scaling), never tried here
+before tonight:
+
+- **Pinned RPS live via sysfs** (`gt_min_freq_mhz` = `gt_max_freq_mhz` =
+  320, the hardware's `RP1`/"efficient" rated point — no reboot needed).
+  One slight black-screen flash while Discord loaded right after applying
+  it, then stable for an extended stretch afterward, including under
+  combined Discord + Firefox + YouTube load with memory tight again — the
+  best stretch of stability all night, but correlational, not proven,
+  given the bug's established intermittency.
+- **`i915.disable_power_well=0`** (forces display power wells to stay up)
+  added and confirmed active at the module-parameter level afterward. But
+  `/sys/kernel/debug/dri/.../gt0/drpc` still showed the GT's own
+  render/media power wells cycling through RC6 exactly as before — this
+  parameter most likely governs the *display* pipe's power wells, a
+  related but architecturally separate domain from the GT engine's own
+  RC6 power gating, so it probably never touched the actual mechanism.
+  There's no `i915.enable_rc6` override left in this kernel version
+  (removed upstream at some point) to test RC6 more directly.
+
+**Neither test is conclusively proven** — the extended stable period that
+followed is a genuinely promising sign, but not distinguishable from the
+bug's normal intermittency without much longer soak testing.
+
+**Separately, and initially confused with the same investigation**: while
+testing a `vm.swappiness` change for responsiveness (section 17), the
+machine went fully unresponsive — not just the display, but genuinely
+unreachable over SSH too, unlike **every** other occurrence tonight,
+which all stayed SSH-reachable throughout. Required a hard power-cycle to
+recover. The persistent journal (confirmed already active by default —
+`/var/log/journal` survives reboots without any changes needed) and the
+resource-monitor CSV (section 13) together reconstructed exactly what
+happened, and it's a different failure mode from the `i915` bug entirely:
+
+```
+2026-09-26T16:21:38-04:00,2.78,5.53,5.54,3957092,216896,833596,280832,59309,30,...
+```
+
+Free memory down to **~212MB**, **~274MB of swap actively in use** (every
+other reading all night showed 0 swap used), zswap actively storing
+compressed pages, and load average at **3.93 / 6.33 / 5.78** — genuinely
+severe for a 2-core CPU. Right as this was unfolding, `iwlwifi` (the WiFi
+driver) started repeatedly failing to submit commands to its own firmware
+(`Error sending STATISTICS_CMD: enqueue_hcmd failed: -5`, `Failed to send
+the temperature measurement command`) every few seconds for about two
+minutes — then **all** logging stopped dead simultaneously (kernel log
+and the resource-monitor's own CSV write, the latter caught mid-write with
+null-byte padding, confirming the freeze happened *during* a write, not
+just after). This was 29 open Firefox tabs plus Discord running
+simultaneously — the same workload already flagged as the direct cause of
+the "choppy" feel in section 17.
+
+**This doesn't contradict section 15's memory-pressure disproof — it
+refines it.** That disproof was real and still stands for the *milder*
+display-flicker symptom (confirmed with 1.3GB+ free at the time). This is
+a different, more severe failure mode: genuine memory exhaustion and swap
+thrashing under a heavier combined workload than was running during any
+of the flicker-only occurrences, severe enough that even unrelated
+kernel-level periodic tasks (the WiFi chip's routine firmware polling)
+started missing their timing and failing, cascading into a full hang. Not
+a driver bug — a real hardware resource limit (3.8GB RAM, 2 weak cores)
+being genuinely exceeded by the workload asked of it. This is also the
+resource-monitor's first real payoff: precise, real data at the actual
+moment of a failure, rather than a snapshot taken after the fact.
+
+### 17. Getting more performance out of weak hardware
+
+Reported as "a little choppy." Checked before changing anything:
+
+```
+Firefox (multiple processes): 46.5% + 36.7% + 20.0% + 8.9% CPU
+Discord (multiple processes): 21.0% + 9.6% CPU
+cinnamon: 12.5% CPU
+```
+
+— on a 2-core CPU with no hyperthreading, with **29 Firefox tabs** open
+alongside Discord. This is genuine, legitimate CPU demand exceeding what
+two weak cores can smoothly deliver, not a misconfiguration — no config
+change makes a hardware ceiling disappear, and section 16's system hang
+happened under exactly this kind of load.
+
+Two real wins applied anyway, both live via `gsettings` (no restart
+needed), reducing Cinnamon's own compositor overhead:
+
+```sh
+gsettings set org.cinnamon desktop-effects false
+gsettings set org.cinnamon desktop-effects-on-menus false
+gsettings set org.cinnamon desktop-effects-on-dialogs false
+gsettings set org.cinnamon.muffin unredirect-fullscreen-windows true
+```
+
+The last one lets a maximized/fullscreen window (e.g. a fullscreen video)
+bypass the compositor and scan out directly, rather than being composited
+— worth having regardless of the animation/effects preference.
+
+Also dialed `vm.swappiness` back from 100 (section 10's battery-life
+choice) to the Debian default of **60**, trading some of that battery-life
+tuning for responsiveness under load, at the user's explicit request. Real
+trade-off, not a pure win — noted here so a future session doesn't
+"re-fix" this back to 100 without knowing it was deliberate.
+
 ### Unit 2 status
 
 Mostly running well, but with one real open problem. Firmware flashed,
@@ -727,25 +836,39 @@ Credentials were set to real values directly during the Debian install
 doesn't apply the way it did for the sibling repo's pre-built-image
 install method — there's no default credential here to harden.
 
-**The open problem**: the `i915` display-corruption bug (section 11, then
-section 15) is not actually fixed. PSR-disable genuinely fixed its own
-trigger, but the same symptom keeps coming back under other triggers and
-has now survived five distinct mitigations across every layer of the
-stack — app GPU use, Xorg's own rendering backend, two different kernel
-display power features, and Xorg's own scheduling priority. Current
-best guess is a genuine PHY-level fragility in this Cherryview board's
-display driver, possibly correlated with memory pressure, not fixable
+**The open problem**: the `i915` display-corruption bug (sections 11, 15,
+16) is not actually fixed, though it may be *less frequent* after
+pinning the GPU's RPS frequency (section 16) — genuinely unproven either
+way. PSR-disable fixed its own original trigger, but the same symptom
+kept coming back under other triggers and has now survived six distinct
+mitigations across every layer of the stack — app GPU use, Xorg's own
+rendering backend, two different kernel display power features, Xorg's
+own scheduling priority, and a GPU-frequency pin inspired by the sibling
+repo's own near-identical bug. Current best guess is a genuine PHY-level
+fragility in this Cherryview board's display driver, not reliably fixable
 with a config flag. Untried next steps: a newer kernel than Debian's
-stock 6.12.107 (this exact PHY-readiness code saw upstream changes as
+stock 6.12.107 (the exact PHY-readiness code saw upstream changes as
 recently as February 2025), and a longer multi-pass `memtest86+` run
-(only a single quick clean pass has been done so far, and every
-recurrence tonight coincided with low free memory).
+(only a single quick clean pass has ever been done).
+
+**A second, more severe and distinct problem surfaced tonight**: under
+genuinely heavy combined load (29 Firefox tabs + Discord), the whole
+machine can hang completely — not just the display, unresponsive over
+SSH too, confirmed via the resource-monitor log (section 16) to be real
+memory exhaustion and swap-thrashing (~212MB free, ~274MB swap in use,
+load average up to 6.33 on a 2-core CPU), not a driver bug. This is a
+hardware resource ceiling, not something to chase a fix for — the actual
+mitigation is not running that much simultaneously on a 3.8GB machine,
+which section 17's performance-tuning work also points at directly.
 
 Still worth watching with extended real-world use rather than considered
 fully closed:
 - The touchpad hard-lock path was only exercised under short, deliberate
   testing, not extended daily use — it hasn't shown up yet, but that's
   not the same as ruling it out.
+- Whether the RPS frequency pin (section 16) actually reduces `i915` bug
+  frequency, or whether the quiet stretch after applying it was
+  coincidental — needs much longer soak testing to tell apart.
 - Whether the NVRAM boot-entry flakiness from unit 1's section 2 recurs
   under different conditions (e.g. after firmware updates, NVRAM clears).
 - `soundmodem.service` fails to start (section 15) — unconfigured
@@ -825,4 +948,10 @@ sudo evtest /dev/input/event0   # then press the key in question
   frequency/thermal state to a rotating daily CSV
   (`/var/log/resource-monitor/`) every 5s. Written to give the still-open
   `i915` display bug (section 15) an actual history to check against
-  instead of only whatever gets checked by hand in the moment.
+  instead of only whatever gets checked by hand in the moment. Already
+  paid off once — see section 16.
+- [`scripts/install-i915-gpu-freq-pin.sh`](scripts/install-i915-gpu-freq-pin.sh)
+  — installs [`scripts/pin-i915-gpu-freq.sh`](scripts/pin-i915-gpu-freq.sh)
+  as a boot-time service pinning the GPU's RPS frequency scaling to a
+  fixed 320MHz, on the sibling repo's GPU-devfreq-transition theory (see
+  section 16). Unproven experiment, not a confirmed fix.
