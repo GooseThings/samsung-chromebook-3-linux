@@ -854,6 +854,16 @@ trade-off, not a pure win — noted here so a future session doesn't
 [`scripts/tune-power-settings.sh`](scripts/tune-power-settings.sh) now
 writes 60 too, so re-running it doesn't silently undo this.
 
+**Later addition (2026-09-26)**: the resource-monitor CSV showed
+`gnome-software` (a background update-checker, pulled in by the desktop
+task) as the single largest memory user in ~90% of all samples — 11,641
+of ~12,800. Disabled its login autostart per-user, no sudo needed, by
+shadowing `/etc/xdg/autostart/org.gnome.Software.desktop` with a
+`~/.config/autostart/org.gnome.Software.desktop` containing
+`Hidden=true`, then `gnome-software --quit`. `MemAvailable` went from
+~1115MB to ~1279MB immediately. The app itself still launches normally
+from the menu when wanted; it just no longer sits resident all session.
+
 ### 18. A completely separate bug masquerading as the `i915` crash: a broken PAM `account` stack crash-looping the screensaver
 
 After section 16's GPU-frequency-pin experiment, "the screen goes black
