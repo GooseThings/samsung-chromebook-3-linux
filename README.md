@@ -714,7 +714,7 @@ cleaning up eventually; and the `cinnamon-screensaver` PAM glitch from
 section 9 recurred a second time tonight, still one-off and still not
 further investigated.
 
-### 16. A GPU-frequency-scaling angle from the sibling repo — inconclusive — and a full system hang that turned out to be real memory exhaustion, not the display bug
+### 16. A GPU-frequency-scaling angle from the sibling repo — genuinely promising, initially masked by an unrelated bug — plus a full system hang that turned out to be real memory exhaustion
 
 The sibling Chromebook 2 repo has an almost exact parallel to this whole
 saga (its own section 6): intermittent panel flicker/blink-to-black,
@@ -742,9 +742,27 @@ before tonight:
   There's no `i915.enable_rc6` override left in this kernel version
   (removed upstream at some point) to test RC6 more directly.
 
-**Neither test is conclusively proven** — the extended stable period that
-followed is a genuinely promising sign, but not distinguishable from the
-bug's normal intermittency without much longer soak testing.
+**Update, later the same session**: at the time, neither test looked
+conclusively proven — a "slight black screen" and later reports of
+"crashing" kept showing up after applying these, with zero corresponding
+`i915` errors each time, which read as the driver just not logging it.
+The real explanation turned out to be simpler and better: **there has
+been no new `i915` error of any kind (no FIFO underrun, no atomic-update
+failure, no PHY_STATUS mismatch) since the GPU frequency pin was
+applied** — not once, across several hours including the exact
+Discord/Firefox/YouTube combinations that reliably triggered it earlier.
+Every "crash" reported after that point turned out to be one of two
+entirely separate, unrelated bugs (the memory-exhaustion hang below, and
+the screensaver PAM crash-loop in section 18) that happen to produce a
+near-identical visible symptom (screen goes black, sometimes back to a
+lock/password prompt). Once those two were independently diagnosed and
+fixed, the absence of any further `i915` error becomes much more
+meaningful — this is now the best evidence of the whole investigation
+that the GPU-frequency-pin theory, borrowed from the sibling repo, might
+actually be right. Still not conclusively proven (this board's own
+history is full of quiet stretches that turned out to be coincidental),
+but genuinely promising, and worth much longer soak testing before
+calling it fixed.
 
 **Separately, and initially confused with the same investigation**: while
 testing a `vm.swappiness` change for responsiveness (section 17), the
@@ -823,6 +841,88 @@ tuning for responsiveness under load, at the user's explicit request. Real
 trade-off, not a pure win — noted here so a future session doesn't
 "re-fix" this back to 100 without knowing it was deliberate.
 
+### 18. A completely separate bug masquerading as the `i915` crash: a broken PAM `account` stack crash-looping the screensaver
+
+After section 16's GPU-frequency-pin experiment, "the screen goes black
+and comes back" kept being reported — but this time with a distinct
+pattern: it recovered on its own within moments, the machine never
+stopped responding, and it sometimes landed on a lock screen asking for a
+password, as if the machine had woken from sleep. That description alone
+was the first clue this might not be the same bug at all — every real
+`i915` occurrence all night either needed a full reboot or left visible
+corruption; this didn't.
+
+Ruled out the boring explanations first: X11 DPMS timeouts were actually
+disabled (`0 0 0`), Cinnamon's own idle-lock is a 15-minute timer (`900`)
+far longer than the ~30-90 second cycle actually being seen, and the user
+confirmed they were **actively using the machine**, not idle, each time it
+happened — ruling out any timeout-based explanation outright.
+
+Caught it live with two parallel `Monitor` watches (one on `dmesg -w`,
+one on `journalctl -f`, both filtered to new lines only) and found the
+real mechanism: `org.cinnamon.ScreenSaver` was being repeatedly
+D-Bus-activated, running briefly, and crashing (`Error in
+sys.excepthook`, `Original exception was:` — the actual traceback itself
+never made it into the journal, cut off both times it was checked),
+every single occurrence paired with:
+
+```
+pam_unix(cinnamon-screensaver:account): setuid failed: Operation not permitted
+```
+
+— right after a *successful* password/keyring unlock, meaning
+authentication itself was fine; it was PAM's **account** phase
+specifically that was failing on every single cycle, crashing the
+screensaver process and forcing a fresh D-Bus-activated relaunch (which
+defaults to a locked state) each time — a genuine crash-loop, not a
+timeout.
+
+Investigated methodically, each one a real, ruled-out hypothesis rather
+than a guess:
+
+- **Missing `@include common-account`** — confirmed real:
+  `/etc/pam.d/cinnamon-screensaver` had only `common-auth` and a
+  `pam_gnome_keyring.so` line, unlike `/etc/pam.d/lightdm`'s full stack
+  (`common-auth`, `common-account`, `common-session`, `common-password`).
+  Added it (backup kept at `cinnamon-screensaver.bak`). **Didn't fix it**
+  — identical error recurred immediately after.
+- **`NoNewPrivileges`-style privilege stripping** — the modern, common
+  cause of a legitimately-setuid-root helper (`unix_chkpwd`, confirmed
+  correctly `-rwxr-sr-x root shadow` on this system) silently losing its
+  privilege escalation. Checked `/proc/<pid>/status` on the actual live
+  screensaver process: `NoNewPrivs: 0`. Not this either.
+- **Missing capability/setuid bit on `cinnamon-screensaver-pam-helper`
+  itself** — checked `getcap` (nothing set) and the package's `postinst`
+  script (no `chmod`/`setcap` step referencing it at all) — inconclusive
+  either way, but nothing obviously missing from the packaging.
+- **Tried to capture the actual Python traceback directly**, bypassing
+  journald, by launching `cinnamon-screensaver` manually with
+  stdout/stderr redirected straight to a file. Lost it anyway — the
+  process crashed hard enough to exit without flushing its (fully
+  buffered, since redirected to a file rather than a TTY) output buffer,
+  losing the exact exception text a second time.
+
+**Root cause not conclusively identified** — this needs a real debugger
+(`gdb`/`strace` attached before the crash, or `PYTHONUNBUFFERED=1` set
+*in advance* of the triggering event) rather than more guessing after the
+fact over SSH. Given this was actively disrupting normal use every
+30-90 seconds, stopped chasing it live and applied a direct mitigation
+instead:
+
+```sh
+gsettings set org.cinnamon.desktop.screensaver lock-enabled false
+gsettings set org.cinnamon.desktop.session idle-delay 0
+gsettings set org.cinnamon.settings-daemon.plugins.power sleep-display-ac 0
+gsettings set org.cinnamon.settings-daemon.plugins.power sleep-display-battery 0
+```
+
+Screensaver/auto-lock/display-sleep fully disabled. Confirmed no
+recurrence afterward. **Trade-off, not a fix**: there is currently no
+automatic screen lock on this machine at all — acceptable for a personal
+device, worth revisiting (with real debugging tools, not SSH guesswork)
+before this device is ever used somewhere an unattended unlocked screen
+would matter.
+
 ### Unit 2 status
 
 Mostly running well, but with one real open problem. Firmware flashed,
@@ -836,39 +936,51 @@ Credentials were set to real values directly during the Debian install
 doesn't apply the way it did for the sibling repo's pre-built-image
 install method — there's no default credential here to harden.
 
-**The open problem**: the `i915` display-corruption bug (sections 11, 15,
-16) is not actually fixed, though it may be *less frequent* after
-pinning the GPU's RPS frequency (section 16) — genuinely unproven either
-way. PSR-disable fixed its own original trigger, but the same symptom
-kept coming back under other triggers and has now survived six distinct
-mitigations across every layer of the stack — app GPU use, Xorg's own
-rendering backend, two different kernel display power features, Xorg's
-own scheduling priority, and a GPU-frequency pin inspired by the sibling
-repo's own near-identical bug. Current best guess is a genuine PHY-level
-fragility in this Cherryview board's display driver, not reliably fixable
-with a config flag. Untried next steps: a newer kernel than Debian's
-stock 6.12.107 (the exact PHY-readiness code saw upstream changes as
-recently as February 2025), and a longer multi-pass `memtest86+` run
-(only a single quick clean pass has ever been done).
+**Three separate problems surfaced tonight, easy to conflate since two of
+them look almost identical to the naked eye ("screen goes black").
+Keeping them straight matters:**
 
-**A second, more severe and distinct problem surfaced tonight**: under
-genuinely heavy combined load (29 Firefox tabs + Discord), the whole
-machine can hang completely — not just the display, unresponsive over
-SSH too, confirmed via the resource-monitor log (section 16) to be real
-memory exhaustion and swap-thrashing (~212MB free, ~274MB swap in use,
-load average up to 6.33 on a 2-core CPU), not a driver bug. This is a
-hardware resource ceiling, not something to chase a fix for — the actual
-mitigation is not running that much simultaneously on a 3.8GB machine,
-which section 17's performance-tuning work also points at directly.
+1. **The `i915` display-corruption bug** (sections 11, 15, 16) — genuinely
+   promising after pinning the GPU's RPS frequency to 320MHz: **zero**
+   new `i915` errors of any kind since that change, across several hours
+   including the exact conditions that reliably triggered it before. Not
+   conclusively proven (needs much longer soak testing), but the best
+   evidence yet that it's actually working, borrowed directly from the
+   sibling repo's own near-identical GPU-devfreq bug. Before this, it had
+   survived six other mitigations across every layer of the stack (app
+   GPU use, Xorg's rendering backend, two kernel display power features,
+   Xorg's scheduling priority). Untried next steps if the pin doesn't
+   hold up: a newer kernel than Debian's stock 6.12.107 (the exact
+   PHY-readiness code saw upstream changes as recently as February 2025),
+   and a longer multi-pass `memtest86+` run (only one quick clean pass
+   has ever been done).
+2. **A full system hang under genuinely heavy load** (29 Firefox tabs +
+   Discord simultaneously) — confirmed via the resource-monitor log to be
+   real memory exhaustion and swap-thrashing (~212MB free, ~274MB swap in
+   use, load average up to 6.33 on this 2-core CPU), not a driver bug. A
+   hardware resource ceiling, not something to chase a fix for — the
+   mitigation is not running that much simultaneously, which section 17's
+   performance-tuning work also points at directly.
+3. **A broken PAM `account` stack crash-looping the Cinnamon screensaver**
+   (section 18) — repeatedly misread mid-session as the `i915` bug
+   recurring, since both present as "screen goes black, sometimes to a
+   lock prompt." Root cause not conclusively identified (needs a real
+   debugger, not more SSH guesswork), mitigated by disabling the
+   screensaver/auto-lock entirely. **This means there is currently no
+   automatic screen lock on this machine at all** — a real trade-off, not
+   a clean fix, worth revisiting before this device is used anywhere an
+   unattended unlocked screen would matter.
 
 Still worth watching with extended real-world use rather than considered
 fully closed:
 - The touchpad hard-lock path was only exercised under short, deliberate
   testing, not extended daily use — it hasn't shown up yet, but that's
   not the same as ruling it out.
-- Whether the RPS frequency pin (section 16) actually reduces `i915` bug
-  frequency, or whether the quiet stretch after applying it was
-  coincidental — needs much longer soak testing to tell apart.
+- Whether the RPS frequency pin genuinely fixed the `i915` bug or just
+  got lucky over one evening — needs much longer soak testing, now that
+  the two confounding bugs above are understood and out of the way.
+- The screensaver PAM crash-loop's actual root cause, and whether
+  automatic locking should be re-enabled once it's properly fixed.
 - Whether the NVRAM boot-entry flakiness from unit 1's section 2 recurs
   under different conditions (e.g. after firmware updates, NVRAM clears).
 - `soundmodem.service` fails to start (section 15) — unconfigured
