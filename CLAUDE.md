@@ -11,20 +11,25 @@ suspect as RAM-corruption symptoms rather than confirmed independent
 bugs. See `README.md`'s full saga for the diagnostic chain — it's real
 and worth keeping even though the root cause turned out to be hardware.
 
-**A second unit is inbound.** Once it has SSH access, the priorities are:
-1. Harden the default credentials immediately (see
-   `scripts/harden-default-credentials.sh`) — skipped on unit 1 before the
-   RAM finding took priority.
-2. Run `memtest86+` (see `scripts/install-memtest86-grub-entry.sh`) early
-   — before chasing any driver-level theory for a crash/freeze symptom,
-   not after. That ordering cost significant time on unit 1.
-3. Re-verify whether the touchpad freeze and `i915` page-flip crash
-   (README sections 4-5) are real, independent bugs on confirmed-good RAM,
-   or don't reproduce at all once RAM isn't a confound.
-4. Append a new dated section to `README.md` for unit 2 rather than
-   editing/removing unit 1's writeup — the diagnostic reasoning there
-   (and the "ruled out in order" discipline) is still valuable even though
-   the underlying hardware died.
+**Unit 2 is the live machine** (hostname `chromux`, Debian 13 + Cinnamon,
+user `levi`). Firmware flashed, RAM passed one `memtest86+` pass, power
+tuning applied. Its own write-up is the "Unit 2" part of `README.md` —
+keep appending dated/numbered sections there rather than editing unit 1's
+writeup; the diagnostic reasoning (and the "ruled out in order"
+discipline) is still valuable even though unit 1's hardware died.
+Section numbering restarts in the Unit 2 part, so always write
+cross-unit references as "Unit 1 section N".
+
+Open items on unit 2 (see README "Unit 2 status" for detail):
+1. `i915` display corruption — soak-testing the 320MHz RPS pin
+   (`pin-i915-gpu-freq.service`) with only `i915.enable_psr=0` left on
+   the kernel cmdline. Check `dmesg` for new `i915` errors before
+   assuming any "screen went black" report is this bug — two unrelated
+   bugs (memory-exhaustion hang, screensaver PAM crash-loop) look the same.
+2. Screensaver PAM `account` crash-loop — mitigated by disabling
+   auto-lock, root cause unknown. Needs a real debugger, not guesswork.
+3. A longer multi-pass `memtest86+` run is still outstanding.
+4. `soundmodem.service` fails (unconfigured leftover from `pat`).
 
 ## Sibling repo — read before assuming anything transfers
 
@@ -62,9 +67,9 @@ the writing style below.
 - **Firmware approach: flash MrChromebox firmware** (`mrchromebox.tech`),
   not the Ctrl+L legacy-boot-every-time route. Chosen for a normal
   permanent boot experience over convenience-without-case-opening.
-  Write-protect screw location for this exact model revision was **not**
-  confirmed from memory — verify against MrChromebox's own per-device page
-  or a teardown guide before opening the case.
+  Write-protect screw location confirmed on unit 2: the only screw on
+  the motherboard's underside with a printed arrow pointing at it (needs
+  the board flipped) — see README Unit 2 section 3.
 - Desktop environment: **Cinnamon** (matches the Peach Pi machine, same
   user preference — XFCE/LXQt/GNOME were all tried and rejected there).
 - Once booted: apply the same category of post-install work as the sibling
@@ -87,8 +92,16 @@ the writing style below.
 
 ## Workflow note
 
-Prior work on the sibling Chromebook was done by SSHing into the live
-device from a Claude Code session and driving changes directly, then
-writing them up here afterward. Expect the same pattern once this device
-has SSH access — check whether the user has already provided an IP/
-hostname and credentials before assuming the device is unreachable.
+Claude Code now runs **directly on the Chromebook** (unit 2) — there's no
+SSH hop; commands run locally as `levi`. `levi` has sudo but not
+passwordless sudo, so anything needing root has to be run by the user in
+a **separate terminal window** — `! sudo ...` inside Claude Code does not
+work (no TTY, so sudo can't prompt: "a terminal is required to read the
+password"). For multi-step root work, write a small script to the
+scratchpad and give the user one `sh <path>` line to run. `levi` is in
+`adm` / `systemd-journal` (added 2026-09-26), so kernel logs and the
+system journal are readable without sudo after a fresh login.
+
+Prior work on the sibling Chromebook (and unit 2's setup before Claude
+was installed on it) was done by SSHing in from a Claude Code session on
+another machine, then writing it up here afterward.

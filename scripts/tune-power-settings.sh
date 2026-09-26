@@ -26,7 +26,7 @@ sudo sed -i \
 sudo systemctl enable --now tlp.service
 sudo tlp start
 
-echo "==> Enabling zswap (zstd, 30% pool) and raising vm.swappiness to 100"
+echo "==> Enabling zswap (zstd, 30% pool); vm.swappiness left at the Debian default (60)"
 echo "    This board has 3.8GB RAM; zswap makes swapping to compressed RAM"
 echo "    nearly free, so preferring it over page-cache eviction is a net"
 echo "    win. Unit 1 tried this and reverted it, but only because it"
@@ -39,7 +39,11 @@ if ! grep -q "zswap.enabled=1" /etc/default/grub; then
     /etc/default/grub
   sudo update-grub
 fi
-echo 'vm.swappiness=100' | sudo tee /etc/sysctl.d/99-zswap-swappiness.conf
+echo "    swappiness was originally set to 100 here (prefer compressed swap"
+echo "    over page-cache eviction, for battery life), then deliberately dialed"
+echo "    back to 60 for responsiveness under load -- see README Unit 2 section"
+echo "    17. Written explicitly so re-running this script doesn't undo that."
+echo 'vm.swappiness=60' | sudo tee /etc/sysctl.d/99-zswap-swappiness.conf
 sudo sysctl -p /etc/sysctl.d/99-zswap-swappiness.conf
 
 echo "==> Disabling the Bluetooth radio entirely (skip this block if you use it)"

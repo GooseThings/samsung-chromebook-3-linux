@@ -10,8 +10,10 @@ Documenting the diagnostic chain anyway, since most of the individual bugs
 chased along the way are real, independently-useful findings (and might be
 the actual cause if the same symptom shows up on a healthy board).
 
-A second unit is inbound — see `CLAUDE.md` for how this repo should evolve
-once it arrives.
+**A second unit has since arrived and passed `memtest86+` cleanly** — see
+[Unit 2](#unit-2-2026-09-25) below. It has its own, real `i915` display
+bug (Unit 2 sections 11, 15, 16), unrelated to unit 1's RAM failure.
+Unit 1's writeup is kept intact as-is.
 
 ## TL;DR
 
@@ -283,6 +285,10 @@ pass, with neither of unit 1's headline bugs (the touchpad hard-lock, the
 `i915` page-flip crash) reproducing so far. Documented as its own section
 per this repo's `CLAUDE.md`, rather than editing unit 1's writeup above.
 
+Section numbering restarts at 1 here. Within this Unit 2 part, a bare
+"section N" means Unit 2's section N; unit 1's are always written out as
+"Unit 1 section N".
+
 ### 1. Enabling SSH from ChromeOS dev mode hit a real rootfs-verification wall
 
 `passwd root` (part of getting `dev_features_ssh`-based SSH access working)
@@ -367,7 +373,7 @@ firmware string exactly.
 ### 5. Debian netinst install — no Calamares detour needed this time
 
 Went straight to the **netinst** installer per unit 1's own recommendation
-(section 2), skipping the live-Cinnamon/Calamares path entirely. Installed
+(Unit 1 section 2), skipping the live-Cinnamon/Calamares path entirely. Installed
 cleanly with no retries. At the GRUB-install step, this run actually
 registered a proper NVRAM boot entry (`efibootmgr` showed `Boot0004*
 debian`, active as `BootCurrent`) without needing the "force EFI removable
@@ -391,7 +397,7 @@ not something to assume will happen.
 
 ### 7. `memtest86+` run early this time — clean pass
 
-Per unit 1's explicit lesson (README section 8, `CLAUDE.md` priority #2),
+Per unit 1's explicit lesson (Unit 1 section 8, `CLAUDE.md` priority #2),
 ran `scripts/install-memtest86-grub-entry.sh` and booted straight into
 `memtest86+` **before** installing the desktop environment or re-testing
 any driver-level symptoms. Result: **0 errors on a full pass** — a clean
@@ -432,13 +438,13 @@ unrelated to this repo's hardware-specific bugs.
 deliberate testing is evidence (not proof — this was one test session, not
 extended stress-testing) that sections 4-5 on unit 1 were more likely
 RAM-corruption symptoms than universal firmware/driver bugs on this board.
-The two community bug reports linked in section 4 still stand on their own
+The two community bug reports linked in Unit 1 section 4 still stand on their own
 merits for other affected units, though.
 
 **Update, later the same session**: the `i915` conclusion above didn't
-hold up under further use — see section 11. A real, reproducible display
+hold up under further use — see Unit 2 section 11. A real, reproducible display
 bug did show up under GPU load; it just wasn't the fatal, oops-and-taint
-crash from section 5. The touchpad hard-lock still hasn't reproduced.
+crash from Unit 1 section 5. The touchpad hard-lock still hasn't reproduced.
 
 ### 10. Power tuning — two settings that don't survive reboot on their own
 
@@ -483,7 +489,7 @@ Shortly after the power-tuning reboot: screen flickering, then black with
 flickering white lines at the top, no visible cursor. Ruled out in order,
 citing actual output at each step rather than guessing:
 
-- **Not a full hard-lock** (unlike section 4's touchpad bug) — the machine
+- **Not a full hard-lock** (unlike Unit 1 section 4's touchpad bug) — the machine
   stayed reachable over SSH throughout every occurrence.
 - **Not TLP** — `systemctl stop tlp.service` while it was happening had no
   effect.
@@ -499,7 +505,7 @@ citing actual output at each step rather than guessing:
   never did.
 - **A full reboot did clear it**, temporarily — until reproduced again
   reliably by opening Firefox and playing a YouTube video (the same
-  "compositor/video load" trigger section 5 speculated about). `dmesg`
+  "compositor/video load" trigger Unit 1 section 5 speculated about). `dmesg`
   caught the actual mechanism on a couple of occurrences:
   ```
   i915 0000:00:02.0: [drm] *ERROR* pipe A underrun
@@ -507,7 +513,7 @@ citing actual output at each step rather than guessing:
   ```
   A display-pipe FIFO underrun — the panel not getting fed data fast
   enough — which is a real, known category of bug on Cherryview `i915`
-  hardware, distinct from section 5's NULL-pointer page-flip oops. It's
+  hardware, distinct from Unit 1 section 5's NULL-pointer page-flip oops. It's
   also not reliably logged: some occurrences produced these lines, at
   least one produced nothing in `dmesg` at all despite the same visible
   corruption, so absence of this exact log line doesn't rule the bug out.
@@ -534,7 +540,8 @@ PSR fix was real and reproducible for what it covered — just don't read
 ### 12. Top-row action keys send no scancode at all — a firmware/EC gap, not a Linux remap issue
 
 Tried applying the sibling repo's function-row-remap technique
-(`scripts/fix-function-row-keys.sh` / hwdb `KEYBOARD_KEY_*` overrides) and
+(the sibling repo's `scripts/fix-function-row-keys.sh` — not in this
+repo — / hwdb `KEYBOARD_KEY_*` overrides) and
 it doesn't apply here, for a more fundamental reason than just "different
 scancodes":
 
@@ -638,7 +645,7 @@ Isolated methodically:
   confirmed via the same `config.json` inspection. Filed here as an
   unresolved, self-resolved glitch rather than a confirmed fix.
 
-### 15. The `i915` display bug is back, worse than thought — five more mitigations, all failed
+### 15. The `i915` display bug is back, worse than thought — four more mitigations, all failed
 
 Section 11's PSR fix turned out to only cover the one trigger it was
 tested against (Firefox + video). The same visible symptom (flicker,
@@ -701,7 +708,7 @@ requirements), and the exact function behind that PHY_STATUS check
 (`vlv_wait_port_ready()`) was still being refactored upstream as recently
 as February 2025 — a newer kernel than Debian's stock 6.12.107 is a real,
 untried option, at the cost of losing a clean apt-managed kernel. The
-extended, multi-pass `memtest86+` run (beyond section 7's single quick
+extended, multi-pass `memtest86+` run (beyond Unit 2 section 7's single quick
 clean pass) is also still outstanding, and worth doing given the
 memory-pressure correlation above, even without direct hardware-error
 evidence (no MCE, no EDAC report, no OOM-kill) found tonight.
@@ -771,17 +778,20 @@ unreachable over SSH too, unlike **every** other occurrence tonight,
 which all stayed SSH-reachable throughout. Required a hard power-cycle to
 recover. The persistent journal (confirmed already active by default —
 `/var/log/journal` survives reboots without any changes needed) and the
-resource-monitor CSV (section 13) together reconstructed exactly what
+resource-monitor CSV (the logger installed after section 15 — see
+[`scripts/install-resource-monitor.sh`](scripts/install-resource-monitor.sh)) together reconstructed exactly what
 happened, and it's a different failure mode from the `i915` bug entirely:
 
 ```
 2026-09-26T16:21:38-04:00,2.78,5.53,5.54,3957092,216896,833596,280832,59309,30,...
 ```
 
-Free memory down to **~212MB**, **~274MB of swap actively in use** (every
-other reading all night showed 0 swap used), zswap actively storing
-compressed pages, and load average at **3.93 / 6.33 / 5.78** — genuinely
-severe for a 2-core CPU. Right as this was unfolding, `iwlwifi` (the WiFi
+That's the last sample before the freeze: free memory down to **~212MB**,
+**~274MB of swap in use** (the log shows 0 swap used every sample from
+midnight until 16:03, then climbing from there), zswap actively storing
+compressed pages. Load average in that final sample was 2.78 / 5.53 /
+5.54, but the log shows it had peaked at **15.91 / 11.01 / 5.81** at
+16:12, nine minutes earlier — genuinely severe for a 2-core CPU. Right as this was unfolding, `iwlwifi` (the WiFi
 driver) started repeatedly failing to submit commands to its own firmware
 (`Error sending STATISTICS_CMD: enqueue_hcmd failed: -5`, `Failed to send
 the temperature measurement command`) every few seconds for about two
@@ -792,12 +802,13 @@ just after). This was 29 open Firefox tabs plus Discord running
 simultaneously — the same workload already flagged as the direct cause of
 the "choppy" feel in section 17.
 
-**This doesn't contradict section 15's memory-pressure disproof — it
-refines it.** That disproof was real and still stands for the *milder*
-display-flicker symptom (confirmed with 1.3GB+ free at the time). This is
-a different, more severe failure mode: genuine memory exhaustion and swap
-thrashing under a heavier combined workload than was running during any
-of the flicker-only occurrences, severe enough that even unrelated
+**How this fits with section 15**: section 15 ruled out *OOM-killing*
+(no `Out of memory: Killed process` line anywhere), not memory pressure
+itself — it actually found low free memory at every flicker recurrence.
+This hang is a different, more severe failure mode on the same spectrum:
+genuine memory exhaustion and swap thrashing under a heavier combined
+workload than was running during the flicker-only occurrences, severe
+enough that even unrelated
 kernel-level periodic tasks (the WiFi chip's routine firmware polling)
 started missing their timing and failing, cascading into a full hang. Not
 a driver bug — a real hardware resource limit (3.8GB RAM, 2 weak cores)
@@ -840,6 +851,8 @@ choice) to the Debian default of **60**, trading some of that battery-life
 tuning for responsiveness under load, at the user's explicit request. Real
 trade-off, not a pure win — noted here so a future session doesn't
 "re-fix" this back to 100 without knowing it was deliberate.
+[`scripts/tune-power-settings.sh`](scripts/tune-power-settings.sh) now
+writes 60 too, so re-running it doesn't silently undo this.
 
 ### 18. A completely separate bug masquerading as the `i915` crash: a broken PAM `account` stack crash-looping the screensaver
 
@@ -947,9 +960,14 @@ Keeping them straight matters:**
    conclusively proven (needs much longer soak testing), but the best
    evidence yet that it's actually working, borrowed directly from the
    sibling repo's own near-identical GPU-devfreq bug. Before this, it had
-   survived six other mitigations across every layer of the stack (app
-   GPU use, Xorg's rendering backend, two kernel display power features,
-   Xorg's scheduling priority). Untried next steps if the pin doesn't
+   only partly yielded to PSR-off (section 11) and survived four other
+   mitigations across every layer of the stack (app GPU use, Xorg's
+   rendering backend, display C-states, Xorg's scheduling priority).
+   To keep the soak test clean, the kernel parameters that were tried and
+   didn't help (`i915.enable_dc=0`, `i915.disable_power_well=0`) were
+   removed afterward, leaving only `i915.enable_psr=0` plus the RPS pin —
+   see [`scripts/set-i915-kernel-params.sh`](scripts/set-i915-kernel-params.sh).
+   Untried next steps if the pin doesn't
    hold up: a newer kernel than Debian's stock 6.12.107 (the exact
    PHY-readiness code saw upstream changes as recently as February 2025),
    and a longer multi-pass `memtest86+` run (only one quick clean pass
@@ -957,7 +975,8 @@ Keeping them straight matters:**
 2. **A full system hang under genuinely heavy load** (29 Firefox tabs +
    Discord simultaneously) — confirmed via the resource-monitor log to be
    real memory exhaustion and swap-thrashing (~212MB free, ~274MB swap in
-   use, load average up to 6.33 on this 2-core CPU), not a driver bug. A
+   use, 1-minute load average peaking at 15.9 on this 2-core CPU), not a
+   driver bug. A
    hardware resource ceiling, not something to chase a fix for — the
    mitigation is not running that much simultaneously, which section 17's
    performance-tuning work also points at directly.
@@ -1024,6 +1043,12 @@ cat /sys/module/zswap/parameters/enabled
 cat /sys/module/zswap/parameters/max_pool_percent
 cat /sys/module/zswap/parameters/compressor
 
+# recent i915 display errors (FIFO underrun, atomic update failure, PHY_STATUS)
+sudo dmesg | grep -iE 'i915.*ERROR|underrun|PHY_STATUS'
+
+# which processes hold GPU file descriptors (is an app really off the GPU?)
+sudo fuser -v /dev/dri/*
+
 # i915 panel self-refresh (PSR) state -- suspect #1 for flicker/corruption under load
 cat /sys/kernel/debug/dri/0000:00:02.0/i915_params/enable_psr   # -1 = driver default (on), 0 = disabled
 
@@ -1039,31 +1064,40 @@ sudo evtest /dev/input/event0   # then press the key in question
 - [`scripts/disable-atmel-touchpad.sh`](scripts/disable-atmel-touchpad.sh)
   — unbind the Atmel maXTouch touchpad driver live and blacklist it so it
   won't load on future boots either, for when it's hard-locking the
-  machine (section 4) and a USB mouse is available as a workaround.
+  machine (Unit 1 section 4) and a USB mouse is available as a workaround.
 - [`scripts/install-memtest86-grub-entry.sh`](scripts/install-memtest86-grub-entry.sh)
   — install `memtest86+` and make sure the GRUB menu actually stays
   visible long enough to select it (Debian's default is a short/hidden
   timeout that's easy to miss).
 - [`scripts/harden-default-credentials.sh`](scripts/harden-default-credentials.sh)
-  — interactively change a weak default account password. Adapted from
-  the sibling repo's script of the same name; never got applied here
-  before the RAM finding took priority — do this early on the next unit.
+  — interactively change a weak default account password (defaults to the
+  current user; prompts twice, refuses empty). Adapted from the sibling
+  repo's script of the same name. Only needed when the install method
+  leaves a default password behind — unit 1 never got to it before the RAM
+  finding, and unit 2's netinst install set real credentials directly, so
+  it didn't apply there (see Unit 2 status).
 - [`scripts/tune-power-settings.sh`](scripts/tune-power-settings.sh) —
   battery-life tuning (TLP/`schedutil`, zswap+swappiness, Bluetooth
   disable). Adapted from the sibling repo's script of the same name, minus
   its Mali-specific GPU devfreq pin; also installs a boot-time fixup
   service for two settings that don't survive reboot on their own — see
-  Unit 2 section 10.
+  Unit 2 section 10. Writes `vm.swappiness=60`, not the original 100 —
+  see Unit 2 section 17.
+- [`scripts/set-i915-kernel-params.sh`](scripts/set-i915-kernel-params.sh)
+  — idempotently sets `i915.enable_psr=0` (Unit 2 section 11's real fix)
+  on the kernel command line and removes the `i915.enable_dc=0` /
+  `i915.disable_power_well=0` experiments that didn't help (sections
+  15-16).
 - [`scripts/install-resource-monitor.sh`](scripts/install-resource-monitor.sh)
   — installs [`scripts/system-resource-monitor.sh`](scripts/system-resource-monitor.sh)
   as a continuous systemd service, logging load/memory/swap/zswap/CPU
   frequency/thermal state to a rotating daily CSV
   (`/var/log/resource-monitor/`) every 5s. Written to give the still-open
-  `i915` display bug (section 15) an actual history to check against
+  `i915` display bug (Unit 2 section 15) an actual history to check against
   instead of only whatever gets checked by hand in the moment. Already
-  paid off once — see section 16.
+  paid off once — see Unit 2 section 16.
 - [`scripts/install-i915-gpu-freq-pin.sh`](scripts/install-i915-gpu-freq-pin.sh)
   — installs [`scripts/pin-i915-gpu-freq.sh`](scripts/pin-i915-gpu-freq.sh)
   as a boot-time service pinning the GPU's RPS frequency scaling to a
   fixed 320MHz, on the sibling repo's GPU-devfreq-transition theory (see
-  section 16). Unproven experiment, not a confirmed fix.
+  Unit 2 section 16). Unproven experiment, not a confirmed fix.

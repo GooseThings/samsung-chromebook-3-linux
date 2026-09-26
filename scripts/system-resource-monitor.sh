@@ -39,9 +39,12 @@ while true; do
   cpu_freq=$(cat /sys/devices/system/cpu/cpu0/cpufreq/scaling_cur_freq 2>/dev/null || echo 0)
   cpu_temp=$(cat /sys/class/thermal/thermal_zone0/temp 2>/dev/null || echo 0)
 
-  top_line=$(ps -eo comm,%mem --sort=-%mem --no-headers | head -1)
-  top_proc=$(echo "$top_line" | awk '{print $1}')
-  top_pct=$(echo "$top_line" | awk '{print $2}')
+  # %mem first, comm last: process names can contain spaces (Firefox's
+  # "Isolated Web Co"), so take everything after the first field as the
+  # name. Commas are stripped so a name can't break the CSV columns.
+  top_line=$(ps -eo %mem,comm --sort=-%mem --no-headers | head -1)
+  top_pct=$(echo "$top_line" | awk '{print $1}')
+  top_proc=$(echo "$top_line" | sed 's/^ *[^ ]* *//; s/,//g')
 
   echo "$ts,$load1,$load5,$load15,$mem_total,$mem_free,$mem_avail,$swap_used,$zswap_pages,$zswap_pool,$cpu_freq,$cpu_temp,$top_proc,$top_pct" >> "$logfile"
 
