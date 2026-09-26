@@ -8,28 +8,34 @@ diagnosed, and retired — `memtest86+` found severe soldered-RAM failure
 retroactively makes most of the other bugs chased along the way (a
 touchpad hard-lock, an `i915` GPU driver crash, kernel heap corruption)
 suspect as RAM-corruption symptoms rather than confirmed independent
-bugs. See `README.md`'s full saga for the diagnostic chain — it's real
-and worth keeping even though the root cause turned out to be hardware.
+bugs. The `README.md` is now a lean problem→fix reference; the full
+diagnostic saga lives in git history (through commit `62b59a9`) if the
+reasoning behind any fix is ever needed.
 
 **Unit 2 is the live machine** (hostname `chromux`, Debian 13 + Cinnamon,
 user `levi`). Firmware flashed, RAM passed one `memtest86+` pass, power
-tuning applied. Its own write-up is the "Unit 2" part of `README.md` —
-keep appending dated/numbered sections there rather than editing unit 1's
-writeup; the diagnostic reasoning (and the "ruled out in order"
-discipline) is still valuable even though unit 1's hardware died.
-Section numbering restarts in the Unit 2 part, so always write
-cross-unit references as "Unit 1 section N".
+tuning applied. Its write-up is the "Unit 2 — live machine" part of
+`README.md`, a lean problem→fix reference (not the old numbered saga).
+Add or update a problem/fix subsection there rather than editing unit 1's
+part; work the diagnostic reasoning ("ruled out in order") out in the
+session and commit only the conclusion and the fix, keeping red herrings
+in commit messages, not the README. Refer to unit 1's material as
+"Unit 1" — the numbered sections are gone, so don't cite section numbers.
 
-Open items on unit 2 (see README "Unit 2 status" for detail):
+Open items on unit 2 (see README "Open items (unit 2)" for detail):
 1. `i915` display corruption — soak-testing the 320MHz RPS pin
    (`pin-i915-gpu-freq.service`) with only `i915.enable_psr=0` left on
-   the kernel cmdline. Check `dmesg` for new `i915` errors before
-   assuming any "screen went black" report is this bug — two unrelated
-   bugs (memory-exhaustion hang, screensaver PAM crash-loop) look the same.
-2. Screensaver PAM `account` crash-loop — mitigated by disabling
-   auto-lock, root cause unknown. Needs a real debugger, not guesswork.
-3. A longer multi-pass `memtest86+` run is still outstanding.
-4. `soundmodem.service` fails (unconfigured leftover from `pat`).
+   the kernel cmdline. Check the journal (`journalctl -b -k | grep -i
+   i915`) for new `i915` errors — not raw `dmesg`, which is restricted
+   for `levi` — before assuming any "screen went black" report is this
+   bug; the memory-exhaustion hang looks the same.
+2. A longer multi-pass `memtest86+` run is still outstanding.
+3. `soundmodem.service` fails (unconfigured leftover from `pat`).
+
+The screensaver crash-loop and the top-row-key gap are both resolved —
+see the README. (The screensaver "PAM `account`" theory was disproven; the
+PAM file was reverted to the distro default and auto-lock left off by
+preference. The top-row keys now emit F1-F10 after a firmware update.)
 
 ## Sibling repo — read before assuming anything transfers
 
@@ -69,7 +75,7 @@ the writing style below.
   permanent boot experience over convenience-without-case-opening.
   Write-protect screw location confirmed on unit 2: the only screw on
   the motherboard's underside with a printed arrow pointing at it (needs
-  the board flipped) — see README Unit 2 section 3.
+  the board flipped) — see README "Firmware & install".
 - Desktop environment: **Cinnamon** (matches the Peach Pi machine, same
   user preference — XFCE/LXQt/GNOME were all tried and rejected there).
 - Once booted: apply the same category of post-install work as the sibling
@@ -78,9 +84,11 @@ the writing style below.
 
 ## Writing style — match the sibling repo
 
-- Narrative "saga" format: numbered `###` sections in `README.md`, each
-  describing a symptom, what was ruled out and how (cite actual commands/
-  output), and the actual fix.
+- `README.md` is a lean problem→fix reference: one concise `###`
+  subsection per issue (symptom in a line or two, then the fix and its
+  script/doc links), not a numbered "saga". Keep red herrings and
+  ruled-out steps in commit messages, not the README. (Deliberate
+  divergence from the sibling repo's saga style.)
 - Cross-reference reusable scripts from prose: `` See [`scripts/foo.sh`](scripts/foo.sh). ``
 - End of README: a "Diagnostics cheat sheet" of generically useful commands,
   and a "Repo contents" bullet list describing every file in `scripts/`.
