@@ -819,3 +819,10 @@ sudo evtest /dev/input/event0   # then press the key in question
   its Mali-specific GPU devfreq pin; also installs a boot-time fixup
   service for two settings that don't survive reboot on their own — see
   Unit 2 section 10.
+- [`scripts/install-resource-monitor.sh`](scripts/install-resource-monitor.sh)
+  — installs [`scripts/system-resource-monitor.sh`](scripts/system-resource-monitor.sh)
+  as a continuous systemd service, logging load/memory/swap/zswap/CPU
+  frequency/thermal state to a rotating daily CSV
+  (`/var/log/resource-monitor/`) every 5s. Written to give the still-open
+  `i915` display bug (section 15) an actual history to check against
+  instead of only whatever gets checked by hand in the moment.
