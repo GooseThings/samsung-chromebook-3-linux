@@ -435,19 +435,168 @@ RAM-corruption symptoms than universal firmware/driver bugs on this board.
 The two community bug reports linked in section 4 still stand on their own
 merits for other affected units, though.
 
+**Update, later the same session**: the `i915` conclusion above didn't
+hold up under further use — see section 11. A real, reproducible display
+bug did show up under GPU load; it just wasn't the fatal, oops-and-taint
+crash from section 5. The touchpad hard-lock still hasn't reproduced.
+
+### 10. Power tuning — two settings that don't survive reboot on their own
+
+Applied [`scripts/tune-power-settings.sh`](scripts/tune-power-settings.sh),
+adapted from the sibling repo's script of the same name: TLP (with
+`schedutil` pinned for AC and battery — already the kernel default here,
+but pinned explicitly so nothing silently reverts it), zswap (`zstd`, 30%
+pool) with `vm.swappiness=100`, and the Bluetooth radio disabled. The
+sibling script's GPU devfreq pin was deliberately **not** carried over —
+that worked around a Mali/Panfrost flicker bug specific to that board's ARM
+GPU, with no equivalent on this board's Intel `i915` driver.
+
+Two settings silently didn't stick across a reboot, both confirmed by
+actually rebooting and re-checking rather than trusting the apply step:
+
+- **`zswap.compressor=zstd` on the kernel cmdline fell back to `lzo`.**
+  `cat /sys/module/zswap/parameters/compressor` read `lzo` after reboot
+  despite the cmdline param being present in `/proc/cmdline` exactly as
+  set. Root cause: zswap's compressor param is applied very early in boot
+  — before the `zstd` module can autoload — so it silently falls back to
+  whatever's already available rather than erroring. Re-writing the sysfs
+  param (`echo zstd > .../compressor`) after boot works fine once the
+  module is actually loaded.
+- **`rfkill block bluetooth` didn't survive reboot either** — it's a live
+  kernel-state change, not persistent config, and the systemd component
+  that would normally persist it (`systemd-rfkill`) is **masked** on this
+  image.
+
+Fixed both the same way: a `zstd` entry in `/etc/modules-load.d/` plus a
+oneshot systemd service (`power-tuning-boot-fixup.service`, installed by
+the script) that re-applies `modprobe zstd; echo zstd >
+.../compressor` and `rfkill block bluetooth` once boot reaches
+`multi-user.target`, rather than unmasking a system-wide service just for
+this. Confirmed post-reboot: `zswap` enabled with `zstd`/30%,
+`vm.swappiness=100`, governor `schedutil`, Bluetooth soft-blocked, `tlp`
+active — all holding after a real reboot, not just immediately after
+applying.
+
+### 11. `i915` display corruption under GPU load — real bug, different from unit 1's, has a fix
+
+Shortly after the power-tuning reboot: screen flickering, then black with
+flickering white lines at the top, no visible cursor. Ruled out in order,
+citing actual output at each step rather than guessing:
+
+- **Not a full hard-lock** (unlike section 4's touchpad bug) — the machine
+  stayed reachable over SSH throughout every occurrence.
+- **Not TLP** — `systemctl stop tlp.service` while it was happening had no
+  effect.
+- **Not zswap/swappiness** — `/sys/kernel/debug/zswap` showed 0 stored
+  pages and `free -h` showed 0 swap used at the time; it wasn't even active.
+- **Not a loose cable from the WP-screw teardown** — physically checked,
+  connectors were fully seated.
+- **Not unit 1's fatal crash** — `cat /proc/sys/kernel/tainted` read `0`
+  every time, `Xorg` stayed alive and out of `D` state, and
+  `systemctl restart display-manager.service` (which would at least
+  temporarily help a userspace-level glitch) did nothing. Unit 1's section
+  5 crash always left a `TAINT_DIE`-tainted kernel oops behind; this
+  never did.
+- **A full reboot did clear it**, temporarily — until reproduced again
+  reliably by opening Firefox and playing a YouTube video (the same
+  "compositor/video load" trigger section 5 speculated about). `dmesg`
+  caught the actual mechanism on a couple of occurrences:
+  ```
+  i915 0000:00:02.0: [drm] *ERROR* pipe A underrun
+  i915 0000:00:02.0: [drm] *ERROR* CPU pipe A FIFO underrun
+  ```
+  A display-pipe FIFO underrun — the panel not getting fed data fast
+  enough — which is a real, known category of bug on Cherryview `i915`
+  hardware, distinct from section 5's NULL-pointer page-flip oops. It's
+  also not reliably logged: some occurrences produced these lines, at
+  least one produced nothing in `dmesg` at all despite the same visible
+  corruption, so absence of this exact log line doesn't rule the bug out.
+
+**Root cause and fix**: checked panel self-refresh (PSR) status via
+`/sys/kernel/debug/dri/0000:00:02.0/i915_params/enable_psr`, which read
+`-1` (driver default — effectively on for a supported panel). PSR
+misbehaving under load is a well-documented real-world source of exactly
+this kind of corruption on Intel platforms. Added `i915.enable_psr=0` to
+`GRUB_CMDLINE_LINUX_DEFAULT`, ran `update-grub`, rebooted, confirmed
+`enable_psr` read `0`, then repeated the exact same Firefox+YouTube test
+that reliably triggered it before. **No crash, no flicker.** (FBC was
+already off by default on this platform — Cherryview doesn't support it —
+so PSR was the only power-saving display feature left to suspect.)
+
+### 12. Top-row action keys send no scancode at all — a firmware/EC gap, not a Linux remap issue
+
+Tried applying the sibling repo's function-row-remap technique
+(`scripts/fix-function-row-keys.sh` / hwdb `KEYBOARD_KEY_*` overrides) and
+it doesn't apply here, for a more fundamental reason than just "different
+scancodes":
+
+- This board's only keyboard input device is `"AT Translated Set 2
+  keyboard"` via `i8042`/`serio0` — legacy PS/2, not the sibling's
+  `cros_ec` SPI matrix keyboard. Different bus entirely, so the sibling's
+  hwdb match line and captured codes were never going to transfer as-is
+  (as `CLAUDE.md` already anticipated) — but the actual finding goes
+  further.
+- Captured with `evtest` on `/dev/input/event0` across three separate,
+  carefully-timed windows: **zero events** of any kind for any top-row
+  key, not even `EV_MSC`/`MSC_SCAN`.
+- Checked for the `atkbd` driver's own "Unknown key" warning (which fires
+  in `dmesg` when a scancode arrives that the driver's table doesn't
+  recognize — this is exactly the hook `KEYBOARD_KEY_*` hwdb overrides
+  patch into). **Nothing.** No scancode is reaching the OS at all, not
+  even an unrecognized one.
+- MrChromebox's Full ROM flash only reflashes the AP (application
+  processor) firmware; the separate embedded controller (EC) chip that
+  physically scans the keyboard matrix still runs its original stock
+  ChromeOS EC firmware, untouched. `cros_ec`/`cros_ec_lpcs` (the AP↔EC
+  communication transport) are loaded and clearly working — `cros-ec-hwmon`,
+  `cros-ec-led`, `cros-charge-control` etc. all function. Manually
+  `modprobe cros_ec_keyb` (the actual driver that turns EC keyboard-matrix
+  scan events into real ChromeOS action-key codes) loads cleanly into the
+  kernel with no errors — but creates no input device, because **there is
+  no matching child device under the EC's platform device tree at all**
+  (`find /sys/bus/platform/devices/cros-ec-dev.1.auto/` lists `hwmon`,
+  `gpio`, `charge-control`, `chardev`, `sysfs`, `debugfs`, `led` — no
+  `keyb`).
+
+**Conclusion**: this traces to coreboot itself, not Linux. Coreboot
+generates the ACPI tables that tell the kernel which EC sub-devices exist;
+for this board's coreboot port, no keyboard-matrix child device is
+declared at all. A web search turned up the likely explanation directly:
+MrChromebox's EC-level keyboard fix (which is what makes these keys work
+automatically with zero Linux-side config on other boards) was added for
+**APL, GLK, and CML** platforms — Braswell (this board's platform) isn't
+in that list.
+
+Actually fixing this would mean patching coreboot's ACPI/SSDT generation
+for the `celes` board and building a custom firmware image from source —
+real coreboot development, well beyond a Linux config change, and out of
+scope for now. Documented as a known limitation rather than pursued
+further. Workarounds: browser back/forward via `Alt+Left`/`Alt+Right`,
+brightness/volume via Cinnamon's own OSD/system tray, or a USB keyboard
+(bypasses the AT/PS2 EC path entirely) if the built-in keys are needed.
+
 ### Unit 2 status
 
-Healthy so far: firmware flashed, Debian 13 + Cinnamon running, RAM
-confirmed clean, neither of unit 1's headline bugs reproduced under direct
-testing. Credentials were set to real values directly during the Debian
-install (not a vendor-set default), so `scripts/harden-default-credentials.sh`
-doesn't apply the way it did for the sibling repo's pre-built-image
-install method — there's no default credential here to harden.
+Running well: firmware flashed, Debian 13 + Cinnamon running, RAM
+confirmed clean, power tuning applied and verified across a reboot. The
+touchpad hard-lock (unit 1 section 4) hasn't reproduced. The `i915` bug
+did reproduce, but as a non-fatal PSR-related display corruption rather
+than section 5's fatal crash, and it's fixed (`i915.enable_psr=0`). The
+top-row action keys don't work and are a documented firmware/EC
+limitation (section 12), not something Linux-side can fix. Credentials
+were set to real values directly during the Debian install (not a
+vendor-set default), so `scripts/harden-default-credentials.sh` doesn't
+apply the way it did for the sibling repo's pre-built-image install
+method — there's no default credential here to harden.
 
 Still worth watching with extended real-world use rather than considered
 fully closed:
-- The touchpad and `i915` crash paths were only exercised under short,
-  deliberate testing, not extended daily use.
+- The touchpad hard-lock path was only exercised under short, deliberate
+  testing, not extended daily use — unlike the `i915` bug, it hasn't shown
+  up yet, but that's not the same as ruling it out.
+- Whether disabling PSR has any downside (typically slightly higher power
+  draw when idling on a static screen) worth watching given this board's
+  already-constrained battery life goals.
 - Whether the NVRAM boot-entry flakiness from unit 1's section 2 recurs
   under different conditions (e.g. after firmware updates, NVRAM clears).
 
@@ -488,6 +637,15 @@ cat /sys/class/drm/card0/gt_cur_freq_mhz
 cat /sys/module/zswap/parameters/enabled
 cat /sys/module/zswap/parameters/max_pool_percent
 cat /sys/module/zswap/parameters/compressor
+
+# i915 panel self-refresh (PSR) state -- suspect #1 for flicker/corruption under load
+cat /sys/kernel/debug/dri/0000:00:02.0/i915_params/enable_psr   # -1 = driver default (on), 0 = disabled
+
+# does the EC expose a given sub-device (e.g. keyboard-matrix) to the kernel at all?
+find /sys/bus/platform/devices/cros-ec-dev.*.auto/ -maxdepth 1
+
+# capture raw keyboard scancodes to check what a key actually sends (if anything)
+sudo evtest /dev/input/event0   # then press the key in question
 ```
 
 ## Repo contents
@@ -504,3 +662,9 @@ cat /sys/module/zswap/parameters/compressor
   — interactively change a weak default account password. Adapted from
   the sibling repo's script of the same name; never got applied here
   before the RAM finding took priority — do this early on the next unit.
+- [`scripts/tune-power-settings.sh`](scripts/tune-power-settings.sh) —
+  battery-life tuning (TLP/`schedutil`, zswap+swappiness, Bluetooth
+  disable). Adapted from the sibling repo's script of the same name, minus
+  its Mali-specific GPU devfreq pin; also installs a boot-time fixup
+  service for two settings that don't survive reboot on their own — see
+  Unit 2 section 10.
